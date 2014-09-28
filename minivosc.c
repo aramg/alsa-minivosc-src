@@ -33,17 +33,23 @@
  *
  */
 
-static int debug = 1;
 /* Use our own dbg macro http://www.n1ywb.com/projects/darts/darts-usb/darts-usb.c*/
 #undef dbg
-#define dbg(format, arg...) do { if (debug) printk(KERN_DEBUG __FILE__ ": " format "\n" , ## arg); } while (0)
-#define dbg2(format, arg...) do { if (debug) printk( ": " format "\n" , ## arg); } while (0)
+#define _DEBUG 1
 
+#if _DEBUG
+//# define dbg(format, arg...) printk(KERN_DEBUG __FILE__ ": " format "\n" , ## arg)
+# define dbg dbg2
+# define dbg2(format, arg...) printk( ": " format "\n" , ## arg)
+#else
+# define dbg(format, arg...) /* */
+# define dbg2(format, arg...) /* */
+#endif
 
 /* Here is our user defined breakpoint to */
 /* initiate communication with remote (k)gdb */
 /* don't use if not actually using kgdb */
-#define BREAKPOINT() asm("   int $3");
+#define BREAKPOINT() /* asm("   int $3") */
 
 
 // copy from aloop-kernel.c:
@@ -61,8 +67,8 @@ static int debug = 1;
 #include <sound/initval.h>
 #include <linux/version.h>
 
-MODULE_AUTHOR("sdaau");
-MODULE_DESCRIPTION("minivosc soundcard");
+MODULE_AUTHOR("sdaau, dev47apps");
+MODULE_DESCRIPTION("droidcam virtual mic");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("{{ALSA,minivosc soundcard}}");
 
@@ -113,7 +119,6 @@ struct minivosc_device
 	/* flags */
 	unsigned int valid;
 	unsigned int running;
-	unsigned int period_update_pending :1;
 	/* timer stuff */
 	unsigned int irq_pos;		/* fractional IRQ position */
 	unsigned int period_size_frac;
@@ -129,20 +134,22 @@ struct minivosc_device
 	unsigned int wvf_lift;	/* lift of waveform array */
 };
 
-// waveform
-#if defined(COPYALG_V1) || defined(COPYALG_V2) || defined(COPYALG_V3)
+#define SND_MINIVOSC_DRIVER    "snd_minivosc_droidcam"
+
+
+#define CABLE_PLAYBACK	(1 << SNDRV_PCM_STREAM_PLAYBACK)
+#define CABLE_CAPTURE	(1 << SNDRV_PCM_STREAM_CAPTURE)
+#define CABLE_BOTH	(CABLE_PLAYBACK | CABLE_CAPTURE)
+
 static char wvfdat[]={	20, 22, 24, 25, 24, 22, 21,
 			19, 17, 15, 14, 15, 17, 19,
 			20, 127, 22, 19, 17, 15, 19};
-#endif
-#if defined(COPYALG_V1) || defined(COPYALG_V2)
 static char wvfdat2[]={	20, 22, 24, 25, 24, 22, 21,
 			19, 17, 15, 14, 15, 17, 19,
 			20, 127, 22, 19, 17, 15, 19};
-#endif
-#if defined(COPYALG_V1) || defined(COPYALG_V2) || defined(COPYALG_V3)
+
 static unsigned int wvfsz=sizeof(wvfdat);//*sizeof(float) is included already
-#endif
+
 // * functions for driver/kernel module initialization
 static void minivosc_unregister_all(void);
 static int __init alsa_card_minivosc_init(void);
@@ -175,9 +182,7 @@ static int minivosc_pcm_free(struct minivosc_device *chip);
 // * declare timer functions - copied from aloop-kernel.c
 static void minivosc_timer_start(struct minivosc_device *mydev);
 static void minivosc_timer_stop(struct minivosc_device *mydev);
-static void minivosc_pos_update(struct minivosc_device *mydev);
 static void minivosc_timer_function(unsigned long data);
-static void minivosc_xfer_buf(struct minivosc_device *mydev, unsigned int count);
 static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned int bytes);
 
 
@@ -202,8 +207,6 @@ static struct snd_device_ops dev_ops =
 };
 
 
-#define SND_MINIVOSC_DRIVER	"snd_minivosc"
-
 // * we need a struct describing the driver:
 static struct platform_driver minivosc_driver =
 {
@@ -217,7 +220,7 @@ static struct platform_driver minivosc_driver =
 	//~ .suspend	= minivosc_suspend,
 	//~ .resume	= minivosc_resume,
 //~ #endif
-	.driver		= {
+	.driver = {
 		.name	= SND_MINIVOSC_DRIVER,
 		.owner = THIS_MODULE
 	},
@@ -262,13 +265,11 @@ static int minivosc_probe(struct platform_device *devptr)
 
 	dbg2("-- mydev %p", mydev);
 
-	sprintf(card->driver, "my_driver-%s", SND_MINIVOSC_DRIVER);
-	sprintf(card->shortname, "MySoundCard Audio %s", SND_MINIVOSC_DRIVER);
-	sprintf(card->longname, "%s", card->shortname);
-
+	sprintf(card->driver, SND_MINIVOSC_DRIVER);
+	sprintf(card->shortname, "DroidCam-Mic");
+	sprintf(card->longname, "DroidCam Virtual Mic");
 
 	snd_card_set_dev(card, &devptr->dev); // present in dummy, not in aloop though
-
 
 	ret = snd_device_new(card, SNDRV_DEV_LOWLEVEL, mydev, &dev_ops);
 
@@ -340,12 +341,10 @@ static int minivosc_remove(struct platform_device *devptr)
  * hw alloc/free functions
  *
  */
-static int minivosc_hw_params(struct snd_pcm_substream *ss,
-                        struct snd_pcm_hw_params *hw_params)
+static int minivosc_hw_params(struct snd_pcm_substream *ss, struct snd_pcm_hw_params *hw_params)
 {
 	dbg("%s", __func__);
-	return snd_pcm_lib_malloc_pages(ss,
-	                                params_buffer_bytes(hw_params));
+	return snd_pcm_lib_malloc_pages(ss, params_buffer_bytes(hw_params));
 }
 
 static int minivosc_hw_free(struct snd_pcm_substream *ss)
@@ -378,8 +377,7 @@ static int minivosc_pcm_open(struct snd_pcm_substream *ss)
 	mydev->wvf_lift = 0; 	//init
 
 	// SETUP THE TIMER HERE:
-	setup_timer(&mydev->timer, minivosc_timer_function,
-	            (unsigned long)mydev);
+	setup_timer(&mydev->timer, minivosc_timer_function, /* user data */(unsigned long)mydev);
 
 	mutex_unlock(&mydev->cable_lock);
 	return 0;
@@ -415,13 +413,13 @@ static int minivosc_pcm_prepare(struct snd_pcm_substream *ss)
 	// .. UNLESS runtime->private_data is assigned in _open?
 	struct snd_pcm_runtime *runtime = ss->runtime;
 	struct minivosc_device *mydev = runtime->private_data;
-	unsigned int bps;
+	unsigned int bps; // bytes per sec (eg. 16000 @ PCM16 8000Hz)
+	unsigned int format_width = snd_pcm_format_width(runtime->format) / 8;
 
-	dbg("%s", __func__);
+	dbg("%s()", __func__);
+	dbg2("	runtime->rate=%d, runtime->channels=%d, format_width=%d", runtime->rate, runtime->channels, format_width);
 
-	bps = runtime->rate * runtime->channels; // params requested by user app (arecord, audacity)
-	bps *= snd_pcm_format_width(runtime->format);
-	bps /= 8;
+	bps = runtime->rate * runtime->channels * format_width; // params requested by user app (arecord, audacity)
 	if (bps <= 0)
 		return -EINVAL;
 
@@ -440,22 +438,19 @@ static int minivosc_pcm_prepare(struct snd_pcm_substream *ss)
 
 	if (!mydev->running) {
 		mydev->irq_pos = 0;
-		mydev->period_update_pending = 0;
 	}
 
 
 	mutex_lock(&mydev->cable_lock);
 	if (!(mydev->valid & ~(1 << ss->stream))) {
 		mydev->pcm_bps = bps;
-		mydev->pcm_period_size =
-			frames_to_bytes(runtime, runtime->period_size);
+		mydev->pcm_period_size = frames_to_bytes(runtime, runtime->period_size);
 		mydev->period_size_frac = frac_pos(mydev->pcm_period_size);
-
 	}
 	mydev->valid |= 1 << ss->stream;
 	mutex_unlock(&mydev->cable_lock);
 
-	dbg2("	pcm_period_size: %u; period_size_frac: %u", mydev->pcm_period_size, mydev->period_size_frac);
+	dbg2("	pcm_period_size=%u; period_size_frac=%u", mydev->pcm_period_size, mydev->period_size_frac);
 
 	return 0;
 }
@@ -471,7 +466,7 @@ static int minivosc_pcm_trigger(struct snd_pcm_substream *ss,
 	// ss->runtime->private_data; but from:
 	struct minivosc_device *mydev = ss->private_data;
 
-	dbg("%s - trig %d", __func__, cmd);
+	dbg("%s - trig %d (start=%d, stop=%d)", __func__, cmd, SNDRV_PCM_TRIGGER_START, SNDRV_PCM_TRIGGER_STOP);
 
 	switch (cmd)
 	{
@@ -479,7 +474,6 @@ static int minivosc_pcm_trigger(struct snd_pcm_substream *ss,
 			// Start the hardware capture
 			// from aloop-kernel.c:
 			if (!mydev->running) {
-				mydev->last_jiffies = jiffies;
 				// SET OFF THE TIMER HERE:
 				minivosc_timer_start(mydev);
 			}
@@ -507,9 +501,9 @@ static snd_pcm_uframes_t minivosc_pcm_pointer(struct snd_pcm_substream *ss)
 	struct snd_pcm_runtime *runtime = ss->runtime;
 	struct minivosc_device *mydev= runtime->private_data;
 
-	dbg2("+minivosc_pointer ");
-	minivosc_pos_update(mydev);
-	dbg2("+	bytes_to_frames(: %lu, mydev->buf_pos: %d", bytes_to_frames(runtime, mydev->buf_pos),mydev->buf_pos);
+	// dbg2("+minivosc_pointer ");
+	// minivosc_pos_update(mydev);
+	// dbg2("+	bytes_to_frames(: %lu, mydev->buf_pos: %d", bytes_to_frames(runtime, mydev->buf_pos),mydev->buf_pos);
 	return bytes_to_frames(runtime, mydev->buf_pos);
 
 }
@@ -522,11 +516,12 @@ static snd_pcm_uframes_t minivosc_pcm_pointer(struct snd_pcm_substream *ss)
  */
 static void minivosc_timer_start(struct minivosc_device *mydev)
 {
-	unsigned long tick;
-	dbg2("minivosc_timer_start: mydev->period_size_frac: %u; mydev->irq_pos: %u jiffies: %lu pcm_bps %u", mydev->period_size_frac, mydev->irq_pos, jiffies, mydev->pcm_bps);
-	tick = mydev->period_size_frac - mydev->irq_pos;
-	tick = (tick + mydev->pcm_bps - 1) / mydev->pcm_bps;
-	mydev->timer.expires = jiffies + tick;
+	dbg2("minivosc_timer_start()");
+	mydev->last_jiffies = jiffies;
+
+	// Fixed 50ms timer
+	mydev->timer.expires = mydev->last_jiffies + (50 * HZ / 1000);
+	dbg2("	last_jiffies=%lu, next_jiffies=%lu", mydev->last_jiffies, mydev->timer.expires);
 	add_timer(&mydev->timer);
 }
 
@@ -536,181 +531,63 @@ static void minivosc_timer_stop(struct minivosc_device *mydev)
 	del_timer(&mydev->timer);
 }
 
-static void minivosc_pos_update(struct minivosc_device *mydev)
+static void minivosc_timer_function(unsigned long data)
 {
 	unsigned int last_pos, count;
 	unsigned long delta;
+	unsigned long jiffies_now = jiffies;
+	struct minivosc_device *mydev = (struct minivosc_device *)data;
 
+	dbg2("%s()", __func__);
 	if (!mydev->running)
 		return;
 
-	dbg2("*minivosc_pos_update: running ");
+	delta = jiffies_now - mydev->last_jiffies;
+	dbg2("*	: jiffies_now=%lu, last_jiffies=%lu, delta %lu", jiffies, mydev->last_jiffies, delta);
 
-	delta = jiffies - mydev->last_jiffies;
-	dbg2("*	: jiffies %lu, ->last_jiffies %lu, delta %lu", jiffies, mydev->last_jiffies, delta);
+	if (delta == 0) goto timer_restart;
 
-	if (!delta)
-		return;
-
-	mydev->last_jiffies += delta;
+	mydev->last_jiffies += jiffies_now;
 
 	last_pos = byte_pos(mydev->irq_pos);
 	mydev->irq_pos += delta * mydev->pcm_bps;
 	count = byte_pos(mydev->irq_pos) - last_pos;
-	dbg2("*	: last_pos %d, c->irq_pos %d, count %d", last_pos, mydev->irq_pos, count);
 
-	if (!count)
-		return;
+	dbg2("*	: bytes count=%d (dma buf pos=%d, size=%d)", count, mydev->buf_pos, mydev->pcm_buffer_size);
+
+	if (!count) goto timer_restart;
 
 	// FILL BUFFER HERE
-	minivosc_xfer_buf(mydev, count);
+	minivosc_fill_capture_buf(mydev, count);
 
 	if (mydev->irq_pos >= mydev->period_size_frac)
 	{
-		dbg2("*	: mydev->irq_pos >= mydev->period_size_frac %d", mydev->period_size_frac);
+		// dbg2("*	: mydev->irq_pos >= mydev->period_size_frac %d, calling snd_pcm_period_elapsed", mydev->period_size_frac);
 		mydev->irq_pos %= mydev->period_size_frac;
-		mydev->period_update_pending = 1;
+		snd_pcm_period_elapsed(mydev->substream);
 	}
-}
 
-static void minivosc_timer_function(unsigned long data)
-{
-	struct minivosc_device *mydev = (struct minivosc_device *)data;
-
-	if (!mydev->running)
-		return;
-
-	dbg2("minivosc_timer_function: running ");
-	minivosc_pos_update(mydev);
+timer_restart:
 	// SET OFF THE TIMER HERE:
 	minivosc_timer_start(mydev);
-
-	if (mydev->period_update_pending)
-	{
-		mydev->period_update_pending = 0;
-
-		if (mydev->running)
-		{
-			dbg2("	: calling snd_pcm_period_elapsed");
-			snd_pcm_period_elapsed(mydev->substream);
-		}
-	}
-}
-
-#define CABLE_PLAYBACK	(1 << SNDRV_PCM_STREAM_PLAYBACK)
-#define CABLE_CAPTURE	(1 << SNDRV_PCM_STREAM_CAPTURE)
-#define CABLE_BOTH	(CABLE_PLAYBACK | CABLE_CAPTURE)
-
-// choose which  copy (fill) algorithm to use -
-// (un)comment as needed, though use only one at a time!
-//~ #define COPYALG_V1
-//~ #define COPYALG_V2
-//~ #define COPYALG_V3
-#define BUFFERMARKS // do we want 'buffer mark' samples or not
-
-static void minivosc_xfer_buf(struct minivosc_device *mydev, unsigned int count)
-{
-
-	dbg2(">minivosc_xfer_buf: count: %d ", count );
-
-	switch (mydev->running) {
-	case CABLE_CAPTURE:
-		minivosc_fill_capture_buf(mydev, count);
-		break;
-	}
-
-		if (mydev->running) {
-// activate this buf_pos calculation, either if V3 is defined,
-//  or if no COPYALG is defined (which also handles lone BUFFERMARKS)
-#if defined(COPYALG_V3) || !(defined(COPYALG_V1) || defined(COPYALG_V2) || defined(COPYALG_V3))
-			// here the (auto)increase of buf_pos is handled
-			mydev->buf_pos += count;
-			mydev->buf_pos %= mydev->pcm_buffer_size;
-			dbg2(">	: mydev->buf_pos: %d ", mydev->buf_pos); // */
-#endif
-		}
+	return;
 }
 
 static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned int bytes)
 {
 	char *dst = mydev->substream->runtime->dma_area;
+	float wrdat;
+	unsigned i, j;
 	unsigned int dst_off = mydev->buf_pos; // buf_pos is in bytes, not in samples !
-	float wrdat; // was char - value to fill silent_size with
-	unsigned int dpos = 0; //added
-#if defined(COPYALG_V1) || defined(COPYALG_V2)
-	int i = 0; //added
-	int mylift = 0; //added
-#endif
-#if defined(COPYALG_V1)
-	unsigned int remain = 0; //added
-	unsigned int remain2 = 0; //added
-	unsigned int wvftocopy = 0; //added
-#endif
-#if defined(COPYALG_V2)
-	int j = 0; //added
-#endif
-#if defined(COPYALG_V3)
-#endif
 
-
-	dbg2("_ minivosc_fill_capture_buf ss %d bs %d bytes %d buf_pos %d sizeof %ld jiffies %lu", mydev->silent_size, mydev->pcm_buffer_size, bytes, dst_off, sizeof(*dst), jiffies);
-
-#if defined(COPYALG_V1)
-	// loop v1.. fill waveform until end of 'bytes'..
-	// using memcpy for copying/filling
-	//*
-	while (dpos < bytes-1)
-	{
-		mylift = mydev->wvf_lift*10 - 10;
-		// create modified - 'lifted' - values of waveform:
-		for (i=0; i<wvfsz; i++) {
-			wvfdat[i] = wvfdat2[i]+mylift;
-		}
-
-		remain = bytes - dpos;
-		remain2 = mydev->pcm_buffer_size - mydev->buf_pos;
-		if (remain < wvfsz) wvftocopy = remain; //not wvfsz - remain!
-		if (remain2 < wvfsz) wvftocopy = remain2; //also see if "big" PCM buffer wraps!
-		else wvftocopy = wvfsz;
-		if (mydev->wvf_pos > 0) wvftocopy -= mydev->wvf_pos;
-
-		dbg2("::: buf_pos %d; dpos %d; wvf_pos %d; wvftocopy %d; remain %d; remain2 %d; wvfsz %d; wvf_lift %d", mydev->buf_pos, dpos, mydev->wvf_pos, wvftocopy, remain, remain2, wvfsz, mydev->wvf_lift);
-
-		memcpy(dst + mydev->buf_pos, &wvfdat[mydev->wvf_pos], wvftocopy);
-
-		dpos += wvftocopy;
-		mydev->buf_pos += wvftocopy; //added if there isn't (auto)increase of buf_pos in xfer_buf
-		mydev->wvf_pos += wvftocopy;
-		if (mydev->wvf_pos >= wvfsz) { // we should wrap waveform here..
-			mydev->wvf_pos -= wvfsz;
-			// also handle lift here..
-			mydev->wvf_lift++;
-			if (mydev->wvf_lift >=4) mydev->wvf_lift = 0;
-		}
-		//added if there isn't (auto)increase of buf_pos in xfer_buf
-		// there may be some misalignments here still, though...
-		if (mydev->buf_pos >= mydev->pcm_buffer_size) {
-			mydev->buf_pos = 0;
-			break; //we don;t really need this.. but maybe here...?
-		}
-		if (dpos >= bytes-1) break;
-	} // end loop v1 */
-#endif //defined(COPYALG_V1)
-
-#if defined(COPYALG_V2)
-	// hmm... for this loop, v2,  I was getting prepare signature (45), if
-	//   mydev->buf_pos autoincrements (wraps) in minivosc_xfer_buf ;
-	// however, for more correct, we calculate 'buf_pos' here instead..
-	// using direct assignment of elements for copying/filling
-	//*
-	for (j=0; j<bytes; j++) {
-		mylift = mydev->wvf_lift*10 - 10;
+	for (j=0; j < bytes; j++) {
+		int mylift = mydev->wvf_lift*10 - 10;
 		for (i=0; i<sizeof(wvfdat); i++) {
 			wvfdat[i] = wvfdat2[i]+mylift;
 		}
 
 		dst[mydev->buf_pos] = wvfdat[mydev->wvf_pos];
-		dpos++; mydev->buf_pos++;
+		mydev->buf_pos++;
 		mydev->wvf_pos++;
 
 		if (mydev->wvf_pos >= wvfsz) { // we should wrap waveform here..
@@ -723,52 +600,7 @@ static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned in
 			mydev->buf_pos = 0;
 			//break; //we don;t really need this
 		}
-		if (dpos >= bytes) break;
 	} // end loop v2 */
-#endif //defined(COPYALG_V2)
-
-#if defined(COPYALG_V3)
-	// as in copy_play_buf in aloop-kernel.c, where we had:
-	//~ char *src = play->substream->runtime->dma_area;
-	//~ char *dst = capt->substream->runtime->dma_area;
-	// 'buf_pos' here is calculated in _xfer_buf, and
-	//   the waveform wrapping is not correct
-	// using memcpy for copying/filling
-
-	for (;;) {
-		unsigned int size = bytes;
-		if (mydev->wvf_pos + size > wvfsz)
-			size = wvfsz - mydev->wvf_pos;
-		if (dst_off + size > mydev->pcm_buffer_size)
-			size = mydev->pcm_buffer_size - dst_off;
-
-		memcpy(dst + dst_off, wvfdat + mydev->wvf_pos, size);
-
-		if (size < mydev->silent_size)
-			mydev->silent_size -= size;
-		else
-			mydev->silent_size = 0;
-		bytes -= size;
-		if (!bytes)
-			break;
-		mydev->wvf_pos = (mydev->wvf_pos + size) % wvfsz;
-		dst_off = (dst_off + size) % mydev->pcm_buffer_size;
-	}
-#endif //defined(COPYALG_V3)
-
-#if defined(BUFFERMARKS)
-	//* //set buffer marks
-	//-------------
-	//these two shouldn't change in repeated calls of this func:
-	memset(dst+1, 160, 1); // mark start of pcm buffer
-	memset(dst + mydev->pcm_buffer_size - 2, 140, 1); // mark end of pcm buffer
-
-	memset(dst + dst_off, 120, 1); // mark start of this fill_capture_buf.
-	if (dst_off==0) memset(dst + dst_off, 250, 1); // different mark if offset is zero
-	// note - if marking end at dst + dst_off + bytes, it gets overwritten by next run
-	memset(dst + dst_off + bytes - 2, 90, 1); // mark end fill_capture_buf.
-	// end set buffer marks */
-#endif //defined(BUFFERMARKS)
 
 	if (mydev->silent_size >= mydev->pcm_buffer_size)
 		return;
@@ -781,10 +613,9 @@ static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned in
 		bytes = mydev->pcm_buffer_size - mydev->silent_size;
 
 	wrdat = -0.2; // value to copy, instead of 0 for silence (if needed)
-
 	for (;;) {
 		unsigned int size = bytes;
-		dpos = 0; //added
+		unsigned int dpos = 0;
 		dbg2("_ clearrr..	%d", bytes);
 		if (dst_off + size > mydev->pcm_buffer_size)
 			size = mydev->pcm_buffer_size - dst_off;
@@ -803,9 +634,6 @@ static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned in
 		dst_off = 0;
 	}
 }
-
-
-
 
 
 /*
