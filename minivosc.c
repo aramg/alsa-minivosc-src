@@ -78,27 +78,27 @@ static int enable[SNDRV_CARDS] = {1, [1 ... (SNDRV_CARDS - 1)] = 0};
 
 static struct platform_device *devices[SNDRV_CARDS];
 
-#define byte_pos(x)	((x) / HZ)
-#define frac_pos(x)	((x) * HZ)
+#define byte_pos(x) ((x) / HZ)
+#define frac_pos(x) ((x) * HZ)
 
-#define MAX_BUFFER (32 * 48)
+#define PERIODS_MAX    16
+#define PERIOD_BYTES 1600 /* 50ms @16KHz or 100ms @8KHZ */
+#define MAX_BUFFER (PERIODS_MAX * PERIOD_BYTES)
+
 static struct snd_pcm_hardware minivosc_pcm_hw =
 {
-	.info = (SNDRV_PCM_INFO_MMAP |
-	SNDRV_PCM_INFO_INTERLEAVED |
-	SNDRV_PCM_INFO_BLOCK_TRANSFER |
-	SNDRV_PCM_INFO_MMAP_VALID),
-	.formats          = SNDRV_PCM_FMTBIT_U8,
-	.rates            = SNDRV_PCM_RATE_8000,
-	.rate_min         = 8000,
-	.rate_max         = 8000,
+	.info = ( SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID | SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER ),
+	.formats          = SNDRV_PCM_FMTBIT_U16,
+	.rates            = SNDRV_PCM_RATE_8000|SNDRV_PCM_RATE_16000,
+	.rate_min         = 8000,  /* 16kBps */
+	.rate_max         = 16000, /* 32kBps */
 	.channels_min     = 1,
 	.channels_max     = 1,
-	.buffer_bytes_max = MAX_BUFFER, //(32 * 48) = 1536,
-	.period_bytes_min = 48,
-	.period_bytes_max = 48,
+	.buffer_bytes_max = MAX_BUFFER,
+	.period_bytes_min = PERIOD_BYTES,
+	.period_bytes_max = PERIOD_BYTES,
 	.periods_min      = 1,
-	.periods_max      = 32,
+	.periods_max      = PERIODS_MAX,
 };
 
 
@@ -134,7 +134,7 @@ struct minivosc_device
 	unsigned int wvf_lift;	/* lift of waveform array */
 };
 
-#define SND_MINIVOSC_DRIVER    "snd_minivosc_droidcam"
+#define SND_MINIVOSC_DRIVER    "snd_droidcam"
 
 
 #define CABLE_PLAYBACK	(1 << SNDRV_PCM_STREAM_PLAYBACK)
@@ -299,10 +299,7 @@ static int minivosc_probe(struct platform_device *devptr)
 	and we first have a chance to set it ... in _open!
 	*/
 
-	ret = snd_pcm_lib_preallocate_pages_for_all(pcm,
-	        SNDRV_DMA_TYPE_CONTINUOUS,
-	        snd_dma_continuous_data(GFP_KERNEL),
-	        MAX_BUFFER, MAX_BUFFER); // in both aloop-kernel.c and dummy.c, after snd_pcm_set_ops...
+	ret = snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS, snd_dma_continuous_data(GFP_KERNEL), MAX_BUFFER, MAX_BUFFER);
 
 	if (ret < 0)
 		goto __nodev;
@@ -417,7 +414,7 @@ static int minivosc_pcm_prepare(struct snd_pcm_substream *ss)
 	unsigned int format_width = snd_pcm_format_width(runtime->format) / 8;
 
 	dbg("%s()", __func__);
-	dbg2("	runtime->rate=%d, runtime->channels=%d, format_width=%d", runtime->rate, runtime->channels, format_width);
+	dbg2("	runtime->rate=%d (format_width=%d), runtime->channels=%d", runtime->rate, format_width, runtime->channels);
 
 	bps = runtime->rate * runtime->channels * format_width; // params requested by user app (arecord, audacity)
 	if (bps <= 0)
@@ -538,12 +535,10 @@ static void minivosc_timer_function(unsigned long data)
 	unsigned long jiffies_now = jiffies;
 	struct minivosc_device *mydev = (struct minivosc_device *)data;
 
-	dbg2("%s()", __func__);
+	delta = jiffies_now - mydev->last_jiffies;
+	dbg2("%s() // jiffies delta = %lu", __func__, delta);
 	if (!mydev->running)
 		return;
-
-	delta = jiffies_now - mydev->last_jiffies;
-	dbg2("*	: jiffies_now=%lu, last_jiffies=%lu, delta %lu", jiffies, mydev->last_jiffies, delta);
 
 	if (delta == 0) goto timer_restart;
 
