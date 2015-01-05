@@ -66,6 +66,7 @@
 #include <sound/pcm.h>
 #include <sound/initval.h>
 #include <linux/version.h>
+#include <net/genetlink.h>
 
 MODULE_AUTHOR("sdaau, dev47apps");
 MODULE_DESCRIPTION("droidcam virtual mic");
@@ -226,6 +227,172 @@ static struct platform_driver minivosc_driver =
 	},
 };
 
+/*
+ * Netlink related code for DroidCam
+ * References:
+ * http://lwn.net/Articles/208755/
+ * http://www.linuxfoundation.org/collaborate/workgroups/networking/generic_netlink_howto
+ */
+/* attributes */
+enum {
+	DOC_EXMPL_A_UNSPEC,
+	DOC_EXMPL_A_ECHO,
+	DOC_EXMPL_A_MAX,
+};
+
+/* attribute policy */
+static struct nla_policy doc_exmpl_genl_policy[DOC_EXMPL_A_MAX] = {
+	[DOC_EXMPL_A_ECHO] = { .type = NLA_NUL_STRING },
+};
+
+/* commands */
+enum {
+	DOC_EXMPL_C_UNSPEC,
+	DOC_EXMPL_C_ECHO,
+	DOC_EXMPL_C_MAX,
+};
+
+#define FAMILY_NAME "DOC_EXMPL"
+
+/* family definition */
+static struct genl_family doc_exmpl_gnl_family = {
+	.id = GENL_ID_GENERATE,
+	.hdrsize = 0,
+	.name = FAMILY_NAME,
+	.version = 1,
+	.maxattr = ( DOC_EXMPL_A_MAX - 1 ),
+};
+
+static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info);
+
+/* operation definition */
+struct genl_ops doc_exmpl_gnl_ops_echo = {
+	.cmd = DOC_EXMPL_C_ECHO,
+	.flags = 0,
+	.policy = doc_exmpl_genl_policy,
+	.doit = doc_exmpl_echo,
+	.dumpit = NULL,
+};
+
+static int dc_netlink_init(void)
+{
+	int rc;
+	rc = genl_register_family(&doc_exmpl_gnl_family);
+	if (rc != 0) {
+		dbg("%s: error: genl_register_family() returned %d", __func__, rc);
+		goto EARLY_OUT;
+	}
+
+	rc = genl_register_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo);
+	if (rc != 0) {
+		dbg("%s: error: genl_register_ops() returned %d", __func__, rc);
+		goto EARLY_OUT;
+	}
+
+EARLY_OUT:
+	return rc;
+}
+
+static void dc_netlink_fini(void)
+{
+	// fixme: unregister_family
+	int rc;
+	rc = genl_unregister_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo);
+	if (rc != 0) {
+		dbg("%s: error: genl_UNregister_ops() returned %d", __func__, rc);
+	}
+
+	rc = genl_unregister_family(&doc_exmpl_gnl_family);
+	if (rc != 0) {
+		dbg("%s: error: genl_UNregister_family() returned %d", __func__, rc);
+	}
+}
+
+/* handler(s) */
+static int _parseMsgFromUseSpace(struct genl_info *pInfo)
+{
+	//struct nlattr *pAttr1 = NULL;
+	//uint32 data1;
+	struct nlattr *pAttr2 = NULL;
+	char* pData2;
+
+	// pAttr1 = pInfo->attrs[?];
+	// if (pAttr1){
+	// 	data1 = *(uint32*)nla_data(pAttr1);
+	// 	dbg("[KERNEL-PART] (int) data1 = %d\n", data1);
+	// }
+
+	pAttr2 = pInfo->attrs[DOC_EXMPL_A_ECHO];
+	if (pAttr2) {
+		pData2 = (char*) nla_data(pAttr2);
+		dbg("[KERNEL-PART] (char*) data2 = %s\n", pData2);
+	}
+
+	return 0;
+}
+
+static int _sendMsgToUserSpace(struct genl_info *pInfo)
+{
+	struct sk_buff *pSendbackSkb = NULL;
+	void *pMsgHead = NULL;
+	int rc;
+
+	// NLMSG_GOODSIZE = PAGE_SIZE - headers = ~4k
+	pSendbackSkb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!pSendbackSkb) {
+		dbg("%s: error: genlmsg_new() failure", __func__);
+		return -1;
+	}
+
+	pMsgHead = genlmsg_put(pSendbackSkb, 0, pInfo->snd_seq+1, &doc_exmpl_gnl_family, 0, DOC_EXMPL_C_ECHO);
+	if (!pMsgHead) {
+		dbg("%s: error: genlmsg_put() failure", __func__);
+		return -1;
+	}
+
+	// rc = nla_put_u32(pSendbackSkb, TACO_ATTRIBUTE_1_INTEGER, 9999);
+	// if (rc != 0){
+	// 	dbg("%s: error: nla_put_u32() failure", __func__);
+	// 	return -1;
+	// }
+
+	rc = nla_put_string(pSendbackSkb, DOC_EXMPL_A_ECHO, "Hello From Kernel! Wazzuup :P");
+	if (rc != 0){
+		dbg("%s: error: nla_put_string() failure", __func__);
+		return -1;
+	}
+
+	genlmsg_end(pSendbackSkb, pMsgHead);
+
+	rc = genlmsg_unicast(&init_net, pSendbackSkb, pInfo->snd_pid);
+	if (rc != 0) {
+		dbg("%s: error: genlmsg_unicast() failure", __func__);
+		return -1;   
+	}
+
+	return 0;
+}
+
+static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info)
+{
+	/* message handling code goes here; return 0 on success, negative values on failure */
+	 if (skb == NULL || info == NULL){
+		dbg("%s: error: NULL at input. skb=%p, info=%p", __func__, skb, info);
+		return -1;
+	}
+
+	if ( 0 != _parseMsgFromUseSpace(info) )
+		return -1;
+
+	if ( 0 != _sendMsgToUserSpace(info) )
+		return -1;
+
+	return 0;
+}
+
+/*
+ *      =================     *
+ */
 
 /*
  *
@@ -650,8 +817,6 @@ static int minivosc_pcm_dev_free(struct snd_device *device)
 	return minivosc_pcm_free(device->device_data);
 }
 
-
-
 /*
  *
  * functions for driver/kernel module initialization
@@ -676,14 +841,15 @@ static int __init alsa_card_minivosc_init(void)
 	int i, err, cards;
 
 	dbg("%s", __func__);
-	err = platform_driver_register(&minivosc_driver);
+	err = dc_netlink_init();
+	if (err != 0)
+		return err;
 
+	err = platform_driver_register(&minivosc_driver);
 	if (err < 0)
 		return err;
 
-
 	cards = 0;
-
 	for (i = 0; i < SNDRV_CARDS; i++)
 	{
 		struct platform_device *device;
@@ -691,8 +857,7 @@ static int __init alsa_card_minivosc_init(void)
 		if (!enable[i])
 			continue;
 
-		device = platform_device_register_simple(SND_MINIVOSC_DRIVER,
-		         i, NULL, 0);
+		device = platform_device_register_simple(SND_MINIVOSC_DRIVER, i, NULL, 0);
 
 		if (IS_ERR(device))
 			continue;
@@ -722,6 +887,7 @@ static int __init alsa_card_minivosc_init(void)
 static void __exit alsa_card_minivosc_exit(void)
 {
 	dbg("%s", __func__);
+	dc_netlink_fini();
 	minivosc_unregister_all();
 }
 
