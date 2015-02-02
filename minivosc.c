@@ -233,6 +233,7 @@ static struct platform_driver minivosc_driver =
  * http://lwn.net/Articles/208755/
  * http://www.linuxfoundation.org/collaborate/workgroups/networking/generic_netlink_howto
  */
+
 /* attributes */
 enum {
 	DOC_EXMPL_A_UNSPEC,
@@ -242,7 +243,7 @@ enum {
 
 /* attribute policy */
 static struct nla_policy doc_exmpl_genl_policy[DOC_EXMPL_A_MAX] = {
-	[DOC_EXMPL_A_ECHO] = { .type = NLA_NUL_STRING },
+	[DOC_EXMPL_A_ECHO] = { .type = NLA_BINARY },
 };
 
 /* commands */
@@ -252,42 +253,57 @@ enum {
 	DOC_EXMPL_C_MAX,
 };
 
-#define FAMILY_NAME "DOC_EXMPL"
+#define FAMILY_NAME "EXMPL_AG"
+#define GENL_VERSION 1
 
 /* family definition */
 static struct genl_family doc_exmpl_gnl_family = {
 	.id = GENL_ID_GENERATE,
 	.hdrsize = 0,
 	.name = FAMILY_NAME,
-	.version = 1,
+	.version = GENL_VERSION,
 	.maxattr = ( DOC_EXMPL_A_MAX - 1 ),
 };
 
 static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info);
 
 /* operation definition */
-struct genl_ops doc_exmpl_gnl_ops_echo = {
+struct genl_ops doc_exmpl_gnl_ops_echo[] = {
+	{
 	.cmd = DOC_EXMPL_C_ECHO,
 	.flags = 0,
 	.policy = doc_exmpl_genl_policy,
 	.doit = doc_exmpl_echo,
 	.dumpit = NULL,
+	},
 };
+
+static int is_genl_family_registered = 0;
 
 static int dc_netlink_init(void)
 {
 	int rc;
+	is_genl_family_registered = 0;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
+#error Kernels below v3.13 not tested yet
+
 	rc = genl_register_family(&doc_exmpl_gnl_family);
 	if (rc != 0) {
 		dbg("%s: error: genl_register_family() returned %d", __func__, rc);
 		goto EARLY_OUT;
 	}
 
-	rc = genl_register_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo);
+	rc = genl_register_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo[0]);
+#else
+
+	rc = genl_register_family_with_ops(&doc_exmpl_gnl_family, doc_exmpl_gnl_ops_echo);
+#endif
 	if (rc != 0) {
 		dbg("%s: error: genl_register_ops() returned %d", __func__, rc);
 		goto EARLY_OUT;
 	}
+	is_genl_family_registered = 1;
 
 EARLY_OUT:
 	return rc;
@@ -295,12 +311,17 @@ EARLY_OUT:
 
 static void dc_netlink_fini(void)
 {
-	// fixme: unregister_family
 	int rc;
-	rc = genl_unregister_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo);
+	if (is_genl_family_registered == 0) return;
+	is_genl_family_registered = 0;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
+#error Kernels below v3.13 not tested yet
+	rc = genl_unregister_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo[0]);
 	if (rc != 0) {
 		dbg("%s: error: genl_UNregister_ops() returned %d", __func__, rc);
 	}
+#endif
 
 	rc = genl_unregister_family(&doc_exmpl_gnl_family);
 	if (rc != 0) {
@@ -315,6 +336,8 @@ static int _parseMsgFromUseSpace(struct genl_info *pInfo)
 	//uint32 data1;
 	struct nlattr *pAttr2 = NULL;
 	char* pData2;
+
+	dbg("%s()\n", __func__);
 
 	// pAttr1 = pInfo->attrs[?];
 	// if (pAttr1){
@@ -336,6 +359,8 @@ static int _sendMsgToUserSpace(struct genl_info *pInfo)
 	struct sk_buff *pSendbackSkb = NULL;
 	void *pMsgHead = NULL;
 	int rc;
+
+	dbg("%s()\n", __func__);
 
 	// NLMSG_GOODSIZE = PAGE_SIZE - headers = ~4k
 	pSendbackSkb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
@@ -364,7 +389,11 @@ static int _sendMsgToUserSpace(struct genl_info *pInfo)
 
 	genlmsg_end(pSendbackSkb, pMsgHead);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
 	rc = genlmsg_unicast(&init_net, pSendbackSkb, pInfo->snd_pid);
+#else
+	rc = genlmsg_unicast(&init_net, pSendbackSkb, pInfo->snd_portid);
+#endif
 	if (rc != 0) {
 		dbg("%s: error: genlmsg_unicast() failure", __func__);
 		return -1;   
@@ -376,6 +405,7 @@ static int _sendMsgToUserSpace(struct genl_info *pInfo)
 static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info)
 {
 	/* message handling code goes here; return 0 on success, negative values on failure */
+	dbg("%s()\n", __func__);
 	 if (skb == NULL || info == NULL){
 		dbg("%s: error: NULL at input. skb=%p, info=%p", __func__, skb, info);
 		return -1;
@@ -384,16 +414,14 @@ static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info)
 	if ( 0 != _parseMsgFromUseSpace(info) )
 		return -1;
 
-	if ( 0 != _sendMsgToUserSpace(info) )
-		return -1;
+	// if ( 0 != _sendMsgToUserSpace(info) )
+	// 	return -1;
 
 	return 0;
 }
 
-/*
- *      =================     *
- */
-
+// -- end netlink code
+//
 /*
  *
  * Probe/remove functions
@@ -843,7 +871,7 @@ static int __init alsa_card_minivosc_init(void)
 	dbg("%s", __func__);
 	err = dc_netlink_init();
 	if (err != 0)
-		return err;
+		return -EEXIST;
 
 	err = platform_driver_register(&minivosc_driver);
 	if (err < 0)

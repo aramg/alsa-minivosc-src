@@ -12,6 +12,9 @@ all:
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 
+user:
+	gcc genetlink-echo-user.c -Wall `pkg-config --libs --cflags libnl-genl-3.0`
+
 insmod:
 	sudo insmod ./snd-minivosc.ko
 
