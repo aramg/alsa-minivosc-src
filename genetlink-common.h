@@ -1,0 +1,21 @@
+#ifndef GENL_TEST_COMMON_H
+#define GENL_TEST_COMMON_H
+
+// attributes
+enum {
+	DC_GENL_ATTR_UNSPEC,
+	DC_GENL_ATTR_S16LE_8K_100MS_PCM,
+	DC_GENL_ATTR_MAX,
+};
+
+// commands
+enum {
+	DC_GENL_CMD_UNSPEC,
+	DC_GENL_CMD_S16LE_8K_100MS_PCM,
+	DC_GENL_CMD_MAX,
+};
+
+#define DC_GENL_FAMILY_NAME "DROIDCAM_SND"
+#define DC_GENL_VERSION 1
+
+#endif

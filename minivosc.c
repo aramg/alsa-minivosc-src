@@ -68,6 +68,8 @@
 #include <linux/version.h>
 #include <net/genetlink.h>
 
+#include "genetlink-common.h"
+
 MODULE_AUTHOR("sdaau, dev47apps");
 MODULE_DESCRIPTION("droidcam virtual mic");
 MODULE_LICENSE("GPL");
@@ -227,6 +229,7 @@ static struct platform_driver minivosc_driver =
 	},
 };
 
+
 /*
  * Netlink related code for DroidCam
  * References:
@@ -234,48 +237,30 @@ static struct platform_driver minivosc_driver =
  * http://www.linuxfoundation.org/collaborate/workgroups/networking/generic_netlink_howto
  */
 
-/* attributes */
-enum {
-	DOC_EXMPL_A_UNSPEC,
-	DOC_EXMPL_A_ECHO,
-	DOC_EXMPL_A_MAX,
+// attribute policies
+static struct nla_policy dc_genl_policy[DC_GENL_ATTR_MAX] = {
+	[DC_GENL_ATTR_S16LE_8K_100MS_PCM] = { .type = NLA_BINARY },
 };
 
-/* attribute policy */
-static struct nla_policy doc_exmpl_genl_policy[DOC_EXMPL_A_MAX] = {
-	[DOC_EXMPL_A_ECHO] = { .type = NLA_BINARY },
-};
-
-/* commands */
-enum {
-	DOC_EXMPL_C_UNSPEC,
-	DOC_EXMPL_C_ECHO,
-	DOC_EXMPL_C_MAX,
-};
-
-#define FAMILY_NAME "EXMPL_AG"
-#define GENL_VERSION 1
-
-/* family definition */
-static struct genl_family doc_exmpl_gnl_family = {
+// family definition
+static struct genl_family dc_genl_family = {
 	.id = GENL_ID_GENERATE,
 	.hdrsize = 0,
-	.name = FAMILY_NAME,
-	.version = GENL_VERSION,
-	.maxattr = ( DOC_EXMPL_A_MAX - 1 ),
+	.name    = DC_GENL_FAMILY_NAME,
+	.version = DC_GENL_VERSION,
+	.maxattr = ( DC_GENL_ATTR_MAX - 1 ),
 };
 
-static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info);
+static int dc_genl_s16le_8k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info);
 
-/* operation definition */
-struct genl_ops doc_exmpl_gnl_ops_echo[] = {
-	{
-	.cmd = DOC_EXMPL_C_ECHO,
+struct genl_ops dc_genl_ops[] = {
+ {
+	.cmd = DC_GENL_CMD_S16LE_8K_100MS_PCM,
 	.flags = 0,
-	.policy = doc_exmpl_genl_policy,
-	.doit = doc_exmpl_echo,
+	.policy = dc_genl_policy,
+	.doit = dc_genl_s16le_8k_100ms_pcm_handler,
 	.dumpit = NULL,
-	},
+ },
 };
 
 static int is_genl_family_registered = 0;
@@ -288,21 +273,22 @@ static int dc_netlink_init(void)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
 #error Kernels below v3.13 not tested yet
 
-	rc = genl_register_family(&doc_exmpl_gnl_family);
+	rc = genl_register_family(&dc_genl_family);
 	if (rc != 0) {
 		dbg("%s: error: genl_register_family() returned %d", __func__, rc);
 		goto EARLY_OUT;
 	}
 
-	rc = genl_register_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo[0]);
+	rc = genl_register_ops(&dc_genl_family, &dc_genl_ops[0]);
 #else
 
-	rc = genl_register_family_with_ops(&doc_exmpl_gnl_family, doc_exmpl_gnl_ops_echo);
+	rc = genl_register_family_with_ops(&dc_genl_family, dc_genl_ops);
 #endif
 	if (rc != 0) {
 		dbg("%s: error: genl_register_ops() returned %d", __func__, rc);
 		goto EARLY_OUT;
 	}
+
 	is_genl_family_registered = 1;
 
 EARLY_OUT:
@@ -317,19 +303,18 @@ static void dc_netlink_fini(void)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
 #error Kernels below v3.13 not tested yet
-	rc = genl_unregister_ops(&doc_exmpl_gnl_family, &doc_exmpl_gnl_ops_echo[0]);
+	rc = genl_unregister_ops(&dc_genl_family, &dc_genl_ops[0]);
 	if (rc != 0) {
 		dbg("%s: error: genl_UNregister_ops() returned %d", __func__, rc);
 	}
 #endif
 
-	rc = genl_unregister_family(&doc_exmpl_gnl_family);
+	rc = genl_unregister_family(&dc_genl_family);
 	if (rc != 0) {
 		dbg("%s: error: genl_UNregister_family() returned %d", __func__, rc);
 	}
 }
 
-/* handler(s) */
 static int _parseMsgFromUseSpace(struct genl_info *pInfo)
 {
 	//struct nlattr *pAttr1 = NULL;
@@ -337,7 +322,7 @@ static int _parseMsgFromUseSpace(struct genl_info *pInfo)
 	struct nlattr *pAttr2 = NULL;
 	char* pData2;
 
-	dbg("%s()\n", __func__);
+	dbg("%s()", __func__);
 
 	// pAttr1 = pInfo->attrs[?];
 	// if (pAttr1){
@@ -345,15 +330,16 @@ static int _parseMsgFromUseSpace(struct genl_info *pInfo)
 	// 	dbg("[KERNEL-PART] (int) data1 = %d\n", data1);
 	// }
 
-	pAttr2 = pInfo->attrs[DOC_EXMPL_A_ECHO];
+	pAttr2 = pInfo->attrs[DC_GENL_ATTR_S16LE_8K_100MS_PCM];
 	if (pAttr2) {
 		pData2 = (char*) nla_data(pAttr2);
-		dbg("[KERNEL-PART] (char*) data2 = %s\n", pData2);
+		dbg("[KERNEL-PART] (char*) data2 = %.*s", nla_len(pAttr2), pData2);
 	}
 
 	return 0;
 }
 
+#if 0
 static int _sendMsgToUserSpace(struct genl_info *pInfo)
 {
 	struct sk_buff *pSendbackSkb = NULL;
@@ -396,17 +382,18 @@ static int _sendMsgToUserSpace(struct genl_info *pInfo)
 #endif
 	if (rc != 0) {
 		dbg("%s: error: genlmsg_unicast() failure", __func__);
-		return -1;   
+		return -1;
 	}
 
 	return 0;
 }
+#endif
 
-static int doc_exmpl_echo(struct sk_buff *skb, struct genl_info *info)
+static int dc_genl_s16le_8k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info)
 {
 	/* message handling code goes here; return 0 on success, negative values on failure */
 	dbg("%s()\n", __func__);
-	 if (skb == NULL || info == NULL){
+	if (skb == NULL || info == NULL){
 		dbg("%s: error: NULL at input. skb=%p, info=%p", __func__, skb, info);
 		return -1;
 	}

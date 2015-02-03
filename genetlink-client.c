@@ -5,29 +5,14 @@
 #include <netlink/genl/family.h>
 #include <linux/genetlink.h>
 
+#include "genetlink-common.h"
+
 #define _DEBUG 1
 #define errprint(...) fprintf(stderr, __VA_ARGS__)
 
 #if _DEBUG
 # define dbg errprint
 #endif
-
-/* commands */
-enum {
-	DOC_EXMPL_C_UNSPEC,
-	DOC_EXMPL_C_ECHO,
-	DOC_EXMPL_C_MAX,
-};
-
-/* attributes */
-enum {
-	DOC_EXMPL_A_UNSPEC,
-	DOC_EXMPL_A_ECHO,
-	DOC_EXMPL_A_MAX,
-};
-
-#define FAMILY_NAME "EXMPL_AG"
-#define GENL_VERSION 1
 
 // http://alsa.opensrc.org/Asoundrc
 // http://stackoverflow.com/questions/3299386/
@@ -45,7 +30,6 @@ struct unl_s {
 int main(int argc, char* argv[])
 {
 	int rc = 0;
-	void *hdr = 0;
 	struct nl_msg *msg = 0;
 	struct unl_s unl = {0};
 
@@ -56,7 +40,7 @@ int main(int argc, char* argv[])
 	}
 
 	unl.hdrlen = NLMSG_ALIGN(sizeof(struct genlmsghdr));
-	unl.family_name = FAMILY_NAME;
+	unl.family_name = DC_GENL_FAMILY_NAME;
 
 	if (genl_connect(unl.sock)) {
 		errprint("genl_connect\n");
@@ -69,23 +53,20 @@ int main(int argc, char* argv[])
 	}
 	unl.family_id = rc;
 	dbg("Found family: %s (id=%d).. sending message\n", unl.family_name, unl.family_id);
+
 	msg = nlmsg_alloc();
 	if (!msg) {
 		errprint("Unable to allocate netlink message\n");
 		goto EARLY_OUT;
 	}
 
-	hdr = genlmsg_put(
-		msg, NL_AUTO_PORT, NL_AUTO_SEQ,
-		unl.family_id, 0, 0,
-		DOC_EXMPL_C_ECHO, GENL_VERSION);
-	if (!hdr) {
+	if (!genlmsg_put(msg, NL_AUTO_PORT, NL_AUTO_SEQ, unl.family_id, 0, 0, DC_GENL_CMD_S16LE_8K_100MS_PCM, DC_GENL_VERSION)) {
 		errprint("Unable to write genl header\n");
 		goto EARLY_OUT;
 	}
 
-	if ((rc = nla_put(msg,  DOC_EXMPL_A_ECHO, 12, "foobarchiki")) < 0) {
-		errprint("Unable to add attribute (nla_put_string): %s\n", nl_geterror(rc));
+	if ((rc = nla_put(msg,  DC_GENL_ATTR_S16LE_8K_100MS_PCM, 12, "foobarchiki")) < 0) {
+		errprint("Unable to add attribute (nla_put): %s\n", nl_geterror(rc));
 		goto EARLY_OUT;
 	}
 
@@ -93,7 +74,6 @@ int main(int argc, char* argv[])
 		errprint("Unable to send message (nl_send_auto): %s\n", nl_geterror(rc));
 		goto EARLY_OUT;
 	}
-
 
 EARLY_OUT:
 	if (msg) nlmsg_free(msg);
