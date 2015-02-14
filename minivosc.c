@@ -37,13 +37,15 @@
 #undef dbg
 #define _DEBUG 1
 
+#define err(format, arg...) printk( ": " format "\n" , ## arg)
+
 #if _DEBUG
 //# define dbg(format, arg...) printk(KERN_DEBUG __FILE__ ": " format "\n" , ## arg)
-# define dbg dbg2
-# define dbg2(format, arg...) printk( ": " format "\n" , ## arg)
+# define dbg err
+# define dbg2 err
 #else
-# define dbg(format, arg...) /* */
-# define dbg2(format, arg...) /* */
+# define dbg(...) /* */
+# define dbg2(...) /* */
 #endif
 
 /* Here is our user defined breakpoint to */
@@ -85,7 +87,7 @@ static struct platform_device *devices[SNDRV_CARDS];
 #define frac_pos(x) ((x) * HZ)
 
 #define PERIODS_MAX    16
-#define PERIOD_BYTES 1600 /* 50ms @16KHz or 100ms @8KHZ */
+#define PERIOD_BYTES 3200 /* 50ms @16KHz or 100ms @8KHZ */
 #define MAX_BUFFER (PERIODS_MAX * PERIOD_BYTES)
 
 static struct snd_pcm_hardware minivosc_pcm_hw =
@@ -132,10 +134,14 @@ struct minivosc_device
 	unsigned int pcm_buffer_size;
 	unsigned int buf_pos;	/* position in buffer */
 	unsigned int silent_size;
-	/* added for waveform: */
-	unsigned int wvf_pos;	/* position in waveform array */
-	unsigned int wvf_lift;	/* lift of waveform array */
+
+	// DroidCam PCM backbuffer
+	unsigned last_sequence;
+	struct dc_pcm_chunk_s back_buffer;
 };
+
+// xxx: not sure how to append user data in 'dc_netlink_init' to be used in dc_genl_parseMsgFromUseSpace :-(
+struct minivosc_device *g_mydev_ptr = NULL;
 
 #define SND_MINIVOSC_DRIVER    "snd_droidcam"
 
@@ -143,15 +149,6 @@ struct minivosc_device
 #define CABLE_PLAYBACK	(1 << SNDRV_PCM_STREAM_PLAYBACK)
 #define CABLE_CAPTURE	(1 << SNDRV_PCM_STREAM_CAPTURE)
 #define CABLE_BOTH	(CABLE_PLAYBACK | CABLE_CAPTURE)
-
-static char wvfdat[]={	20, 22, 24, 25, 24, 22, 21,
-			19, 17, 15, 14, 15, 17, 19,
-			20, 127, 22, 19, 17, 15, 19};
-static char wvfdat2[]={	20, 22, 24, 25, 24, 22, 21,
-			19, 17, 15, 14, 15, 17, 19,
-			20, 127, 22, 19, 17, 15, 19};
-
-static unsigned int wvfsz=sizeof(wvfdat);//*sizeof(float) is included already
 
 // * functions for driver/kernel module initialization
 static void minivosc_unregister_all(void);
@@ -183,7 +180,7 @@ static int minivosc_pcm_dev_free(struct snd_device *device);
 static int minivosc_pcm_free(struct minivosc_device *chip);
 
 // * declare timer functions - copied from aloop-kernel.c
-static void minivosc_timer_start(struct minivosc_device *mydev);
+static void minivosc_timer_start(struct minivosc_device *mydev, unsigned timeout_ms);
 static void minivosc_timer_stop(struct minivosc_device *mydev);
 static void minivosc_timer_function(unsigned long data);
 static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned int bytes);
@@ -239,7 +236,7 @@ static struct platform_driver minivosc_driver =
 
 // attribute policies
 static struct nla_policy dc_genl_policy[DC_GENL_ATTR_MAX] = {
-	[DC_GENL_ATTR_S16LE_8K_100MS_PCM] = { .type = NLA_BINARY },
+	[DC_GENL_ATTR_S16LE_16K_100MS_PCM] = { .type = NLA_BINARY, .len = DC_PCM_CHUNK_BYTES },
 };
 
 // family definition
@@ -251,14 +248,14 @@ static struct genl_family dc_genl_family = {
 	.maxattr = ( DC_GENL_ATTR_MAX - 1 ),
 };
 
-static int dc_genl_s16le_8k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info);
+static int dc_genl_s16le_16k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info);
 
 struct genl_ops dc_genl_ops[] = {
  {
-	.cmd = DC_GENL_CMD_S16LE_8K_100MS_PCM,
+	.cmd = DC_GENL_CMD_S16LE_16K_100MS_PCM,
 	.flags = 0,
 	.policy = dc_genl_policy,
-	.doit = dc_genl_s16le_8k_100ms_pcm_handler,
+	.doit = dc_genl_s16le_16k_100ms_pcm_handler,
 	.dumpit = NULL,
  },
 };
@@ -315,32 +312,38 @@ static void dc_netlink_fini(void)
 	}
 }
 
-static int _parseMsgFromUseSpace(struct genl_info *pInfo)
+static int dc_genl_parseMsgFromUserSpace(struct genl_info *pInfo)
 {
-	//struct nlattr *pAttr1 = NULL;
-	//uint32 data1;
-	struct nlattr *pAttr2 = NULL;
-	char* pData2;
+	struct nlattr *pAttr1 = NULL;
+	// dbg("%s()", __func__);
 
-	dbg("%s()", __func__);
-
-	// pAttr1 = pInfo->attrs[?];
-	// if (pAttr1){
-	// 	data1 = *(uint32*)nla_data(pAttr1);
-	// 	dbg("[KERNEL-PART] (int) data1 = %d\n", data1);
+	// pAttrX = pInfo->attrs[?];
+	// if (pAttrX){
+	// ..
 	// }
 
-	pAttr2 = pInfo->attrs[DC_GENL_ATTR_S16LE_8K_100MS_PCM];
-	if (pAttr2) {
-		pData2 = (char*) nla_data(pAttr2);
-		dbg("[KERNEL-PART] (char*) data2 = %.*s", nla_len(pAttr2), pData2);
+	pAttr1 = pInfo->attrs[DC_GENL_ATTR_S16LE_16K_100MS_PCM];
+	if (pAttr1) {
+		int len = nla_len(pAttr1);
+		struct dc_pcm_chunk_s *chunk = (struct dc_pcm_chunk_s *) nla_data(pAttr1);
+		// dbg("PCM chunk nla_data=%p len=%d (g_mydev_ptr=%p)", chunk, len, g_mydev_ptr);
+		if (!chunk || len < DC_PCM_CHUNK_BYTES) {
+			err("[droidam_snd] got null pcm chunk! data=%p len=%d", chunk->data, len);
+			goto EARLY_OUT;
+		}
+		// todo
+		// lock the buffer, make the read/writes atomic somehow
+		if (g_mydev_ptr) {
+			g_mydev_ptr->back_buffer = *chunk;
+		}
 	}
 
+EARLY_OUT:
 	return 0;
 }
 
 #if 0
-static int _sendMsgToUserSpace(struct genl_info *pInfo)
+static int dc_genl_sendMsgToUserSpace(struct genl_info *pInfo)
 {
 	struct sk_buff *pSendbackSkb = NULL;
 	void *pMsgHead = NULL;
@@ -389,19 +392,19 @@ static int _sendMsgToUserSpace(struct genl_info *pInfo)
 }
 #endif
 
-static int dc_genl_s16le_8k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info)
+static int dc_genl_s16le_16k_100ms_pcm_handler(struct sk_buff *skb, struct genl_info *info)
 {
 	/* message handling code goes here; return 0 on success, negative values on failure */
-	dbg("%s()\n", __func__);
+	// dbg("%s()", __func__);
 	if (skb == NULL || info == NULL){
 		dbg("%s: error: NULL at input. skb=%p, info=%p", __func__, skb, info);
 		return -1;
 	}
 
-	if ( 0 != _parseMsgFromUseSpace(info) )
+	if ( 0 != dc_genl_parseMsgFromUserSpace(info) )
 		return -1;
 
-	// if ( 0 != _sendMsgToUserSpace(info) )
+	// if ( 0 != dc_genl_sendMsgToUserSpace(info) )
 	// 	return -1;
 
 	return 0;
@@ -446,6 +449,7 @@ static int minivosc_probe(struct platform_device *devptr)
 	mutex_init(&mydev->cable_lock);
 
 	dbg2("-- mydev %p", mydev);
+	g_mydev_ptr = mydev;
 
 	sprintf(card->driver, SND_MINIVOSC_DRIVER);
 	sprintf(card->shortname, "DroidCam-Mic");
@@ -552,8 +556,8 @@ static int minivosc_pcm_open(struct snd_pcm_substream *ss)
 
 	mydev->substream = ss; 	//save (system given) substream *ss, in our structure field
 	ss->runtime->private_data = mydev;
-	mydev->wvf_pos = 0; 	//init
-	mydev->wvf_lift = 0; 	//init
+
+	// todo init
 
 	// SETUP THE TIMER HERE:
 	setup_timer(&mydev->timer, minivosc_timer_function, /* user data */(unsigned long)mydev);
@@ -606,19 +610,13 @@ static int minivosc_pcm_prepare(struct snd_pcm_substream *ss)
 	mydev->pcm_buffer_size = frames_to_bytes(runtime, runtime->buffer_size);
 	dbg2("	bps: %u; runtime->buffer_size: %lu; mydev->pcm_buffer_size: %u", bps, runtime->buffer_size, mydev->pcm_buffer_size);
 	if (ss->stream == SNDRV_PCM_STREAM_CAPTURE) {
-		/* clear capture buffer */
 		mydev->silent_size = mydev->pcm_buffer_size;
-		//memset(runtime->dma_area, 0, mydev->pcm_buffer_size);
-		// we're in char land here, so let's mark prepare buffer with value 45 (signature)
-		// this turns out to set everything permanently throughout - not just first buffer,
-		// even though it runs only at start?
-		memset(runtime->dma_area, 45, mydev->pcm_buffer_size);
+		memset(runtime->dma_area, 0, mydev->pcm_buffer_size);
 	}
 
 	if (!mydev->running) {
 		mydev->irq_pos = 0;
 	}
-
 
 	mutex_lock(&mydev->cable_lock);
 	if (!(mydev->valid & ~(1 << ss->stream))) {
@@ -630,6 +628,8 @@ static int minivosc_pcm_prepare(struct snd_pcm_substream *ss)
 	mutex_unlock(&mydev->cable_lock);
 
 	dbg2("	pcm_period_size=%u; period_size_frac=%u", mydev->pcm_period_size, mydev->period_size_frac);
+	mydev->last_sequence = 0;
+	mydev->back_buffer.sequence = 0;
 
 	return 0;
 }
@@ -653,8 +653,7 @@ static int minivosc_pcm_trigger(struct snd_pcm_substream *ss,
 			// Start the hardware capture
 			// from aloop-kernel.c:
 			if (!mydev->running) {
-				// SET OFF THE TIMER HERE:
-				minivosc_timer_start(mydev);
+				minivosc_timer_start(mydev, 100);
 			}
 			mydev->running |= (1 << ss->stream);
 			break;
@@ -693,14 +692,12 @@ static snd_pcm_uframes_t minivosc_pcm_pointer(struct snd_pcm_substream *ss)
  * Timer functions
  *
  */
-static void minivosc_timer_start(struct minivosc_device *mydev)
+static void minivosc_timer_start(struct minivosc_device *mydev, unsigned timeout_ms)
 {
-	dbg2("minivosc_timer_start()");
+	//dbg2("minivosc_timer_start()");
 	mydev->last_jiffies = jiffies;
-
-	// Fixed 50ms timer
-	mydev->timer.expires = mydev->last_jiffies + (50 * HZ / 1000);
-	dbg2("	last_jiffies=%lu, next_jiffies=%lu", mydev->last_jiffies, mydev->timer.expires);
+	mydev->timer.expires = mydev->last_jiffies + msecs_to_jiffies(timeout_ms);
+	//dbg2("	last_jiffies=%lu, next_jiffies=%lu", mydev->last_jiffies, mydev->timer.expires);
 	add_timer(&mydev->timer);
 }
 
@@ -712,6 +709,7 @@ static void minivosc_timer_stop(struct minivosc_device *mydev)
 
 static void minivosc_timer_function(unsigned long data)
 {
+	int timeout_ms = 10;
 	unsigned int last_pos, count;
 	unsigned long delta;
 	unsigned long jiffies_now = jiffies;
@@ -722,20 +720,27 @@ static void minivosc_timer_function(unsigned long data)
 	if (!mydev->running)
 		return;
 
-	if (delta == 0) goto timer_restart;
+	if (delta == 0)
+		goto timer_restart;
 
 	mydev->last_jiffies += jiffies_now;
 
 	last_pos = byte_pos(mydev->irq_pos);
 	mydev->irq_pos += delta * mydev->pcm_bps;
 	count = byte_pos(mydev->irq_pos) - last_pos;
-
 	dbg2("*	: bytes count=%d (dma buf pos=%d, size=%d)", count, mydev->buf_pos, mydev->pcm_buffer_size);
+	if (count == 0)
+		goto timer_restart;
 
-	if (!count) goto timer_restart;
+	dbg2("*	: dc_back_buffer curr-seq=%d last-seq=%d", mydev->back_buffer.sequence, mydev->last_sequence);
+	if (mydev->back_buffer.sequence <= mydev->last_sequence) {
+		goto timer_restart;
+	}
+	mydev->last_sequence = mydev->back_buffer.sequence;
 
 	// FILL BUFFER HERE
 	minivosc_fill_capture_buf(mydev, count);
+	timeout_ms = 100;
 
 	if (mydev->irq_pos >= mydev->period_size_frac)
 	{
@@ -745,8 +750,7 @@ static void minivosc_timer_function(unsigned long data)
 	}
 
 timer_restart:
-	// SET OFF THE TIMER HERE:
-	minivosc_timer_start(mydev);
+	minivosc_timer_start(mydev, timeout_ms);
 	return;
 }
 
@@ -754,30 +758,26 @@ static void minivosc_fill_capture_buf(struct minivosc_device *mydev, unsigned in
 {
 	char *dst = mydev->substream->runtime->dma_area;
 	float wrdat;
-	unsigned i, j;
+	unsigned j;
 	unsigned int dst_off = mydev->buf_pos; // buf_pos is in bytes, not in samples !
 
+	if (bytes > DC_PCM_CHUNK_DATA_LEN)
+		bytes = DC_PCM_CHUNK_DATA_LEN;
+
+	dbg2("Writing sequence %d [ %x %x %x ... %x %x %x]", mydev->back_buffer.sequence,
+			mydev->back_buffer.data[0] & 0xff,\
+			mydev->back_buffer.data[1] & 0xff,\
+			mydev->back_buffer.data[2] & 0xff,\
+			mydev->back_buffer.data[DC_PCM_CHUNK_DATA_LEN -3]&0xff,\
+			mydev->back_buffer.data[DC_PCM_CHUNK_DATA_LEN -2]&0xff,\
+			mydev->back_buffer.data[DC_PCM_CHUNK_DATA_LEN -1]&0xff);
+
 	for (j=0; j < bytes; j++) {
-		int mylift = mydev->wvf_lift*10 - 10;
-		for (i=0; i<sizeof(wvfdat); i++) {
-			wvfdat[i] = wvfdat2[i]+mylift;
-		}
-
-		dst[mydev->buf_pos] = wvfdat[mydev->wvf_pos];
-		mydev->buf_pos++;
-		mydev->wvf_pos++;
-
-		if (mydev->wvf_pos >= wvfsz) { // we should wrap waveform here..
-			mydev->wvf_pos = 0;
-			// also handle lift here..
-			mydev->wvf_lift++;
-			if (mydev->wvf_lift >=4) mydev->wvf_lift = 0;
-		}
+		dst[mydev->buf_pos++] = mydev->back_buffer.data[j];
 		if (mydev->buf_pos >= mydev->pcm_buffer_size) {
 			mydev->buf_pos = 0;
-			//break; //we don;t really need this
 		}
-	} // end loop v2 */
+	}
 
 	if (mydev->silent_size >= mydev->pcm_buffer_size)
 		return;

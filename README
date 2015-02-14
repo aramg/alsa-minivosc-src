@@ -3,3 +3,37 @@ http://www.alsa-project.org/main/index.php/Minivosc
 
 
 Fix build error in Linux Kernel v3.8 or later.
+
+---
+
+This is a potential candidate for adding audio support for DroidCam on Linux.
+"minivosc.c" creates a virtual mic, which has been modified to to register a generic netlink family for getting data from user sapce.
+
+|--------------------|----------------|--------------|-------------|-------------------------|
+| genetlink-client.c # ->| libnl ] -> | snd_droidcam | -->|alsa|-> # arecord or skype or vlc |
+|--------------------|----------------|--------------|-------------|-------------------------|
+
+Missing features:
+- There is not special syncronization logic yet for passing the data received via netlink to the timer that copies the data up to the recording program.
+
+- genetlink has been modified over the last few kernel updates, so far the code has been tested on Kernel 3.13 (and with libnl3).
+It would probably be easy to make it compatible with all 3.x kernels.
+
+Getting started:
+
+First, review the wiki linked at the top.
+
+~$ make          # build driver
+~$ make user     # build userspace test program
+~$ make insmod   # run insmod to load driver
+
+note: Output from driver will be printed to /var/log/syslog
+
+~$ ./a.out zAudio.s16le.16000.pcm & sleep 1;  arecord -d8 -D hw:1,0 -f u16_le -r 16000 -t raw zzz.pcm
+
+The above will start the userspace test program, which will start sending 100ms chunks of PCM data
+via generic netlink to the driver (this is the "agreement" we have between user/kernel space).
+We also use arecord to start recording from the mic into zzz.pcm. Again, tail syslog for some debug output.
+
+~$ aplay -f s16_le -r 16000 -t raw  zAudio.s16le.16000.pcm # play original file
+~$ aplay -f s16_le -r 16000 -t raw  zzz.pcm                # play recorded file
